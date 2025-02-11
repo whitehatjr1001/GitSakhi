@@ -83,9 +83,8 @@ class Indexer:
             })
     
     def _clean_content(self, content: str) -> str:
-        """Clean and normalize file content."""
-        # Remove line numbers if present
-        content = re.sub(r'^\s*\d+\s+\|\s*', '', content, flags=re.MULTILINE)
+        """Clean and normalize file content while preserving line numbers."""
+        # Keep line numbers and content exactly as they appear
         return content.strip()
     
     def get_structure_text(self) -> str:

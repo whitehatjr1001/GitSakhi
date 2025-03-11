@@ -162,16 +162,14 @@ async def interactive_mode(repo_url: str):
             console.print(f"[red]- {var}")
         return
     
-    # Initialize RAG and LLM
+    # Initialize RAG system with environment variables
     rag = CodeRAG(
-        cloudflare_key=os.getenv("CLOUDFLARE_API_TOKEN"),  # Use API token
-        cloudflare_email=os.getenv("CLOUDFLARE_EMAIL"),    # Use email
-        cloudflare_account_id=os.getenv("CLOUDFLARE_ACCOUNT_ID"),  # Use account ID
-        openai_key=os.getenv("OPENAI_API_KEY"),
+        account_id=os.environ.get("CLOUDFLARE_ACCOUNT_ID"),
+        openai_key=os.environ.get("OPENAI_API_KEY"),
         namespace="code-understanding"
     )
     
-    llm = GroqLLM(api_key=os.getenv("GROQ_API_KEY"))
+    llm = GroqLLM(api_key=os.environ.get("GROQ_API_KEY"))
     
     # Index the repository first
     await index_repository(rag, repo_url)
@@ -208,13 +206,11 @@ async def main():
     elif args.repo and args.query:
         # Initialize and run single query
         rag = CodeRAG(
-            cloudflare_key=os.getenv("CLOUDFLARE_API_TOKEN"),
-            cloudflare_email=os.getenv("CLOUDFLARE_EMAIL"),
-            cloudflare_account_id=os.getenv("CLOUDFLARE_ACCOUNT_ID"),
-            openai_key=os.getenv("OPENAI_API_KEY"),
+            account_id=os.environ.get("CLOUDFLARE_ACCOUNT_ID"),
+            openai_key=os.environ.get("OPENAI_API_KEY"),
             namespace="code-understanding"
         )
-        llm = GroqLLM(api_key=os.getenv("GROQ_API_KEY"))
+        llm = GroqLLM(api_key=os.environ.get("GROQ_API_KEY"))
         
         await index_repository(rag, args.repo)
         await query_repository(rag, llm, args.query)

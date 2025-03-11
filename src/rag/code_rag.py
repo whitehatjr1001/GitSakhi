@@ -1,279 +1,210 @@
-from typing import Dict, List, Optional, Callable
+from typing import Dict, List
 import os
-from openai import OpenAI
-from ..index.repo_fetcher import RepoFetcher
-from ..index.indexer import Indexer
-from .code_parser import LanguageParser, CodeNode
-from .cloudflare_vectorize import CloudflareVectorize
+from rich.progress import Progress, SpinnerColumn, TextColumn
 
-class CodeChunk:
-    def __init__(self, content: str, file_path: str, chunk_type: str = "code", 
-                 start_line: int = 0, end_line: int = 0, name: str = "", scope: str = None):
-        self.content = content
-        self.file_path = file_path
-        self.chunk_type = chunk_type
-        self.language = self._detect_language(file_path)
-        self.embedding = None
-        self.start_line = start_line
-        self.end_line = end_line
-        self.name = name
-        self.scope = scope
-        
-    def _detect_language(self, file_path: str) -> str:
-        """Detect language from file extension."""
-        ext = file_path.split('.')[-1] if '.' in file_path else ''
-        language_map = {
-            'py': 'python',
-            'js': 'javascript',
-            'ts': 'typescript',
-            'java': 'java',
-            'cpp': 'cpp',
-            'c': 'c',
-            'go': 'go',
-            'rs': 'rust',
-            'rb': 'ruby',
-            'php': 'php',
-            'cs': 'csharp',
-            'swift': 'swift',
-            'kt': 'kotlin',
-            'scala': 'scala',
-            'md': 'markdown',
-            'json': 'json',
-            'yaml': 'yaml',
-            'yml': 'yaml',
-            'html': 'html',
-            'css': 'css',
-            'sql': 'sql'
-        }
-        return language_map.get(ext.lower(), 'text')
+from .embeddings import OpenAIEmbeddings
+from .cloudflare_vectorize import CloudflareVectorize
+from .knowledge_graph import KnowledgeGraph
 
 class CodeRAG:
     """Code Retrieval Augmented Generation system."""
     
-    def __init__(self, cloudflare_key: str, cloudflare_email: str, cloudflare_account_id: str, openai_key: str, namespace: str = "code-understanding"):
+    def __init__(self, index_name: str = "code-index"):
+        """Initialize components."""
+        self.embeddings = OpenAIEmbeddings()
+        self.vectorize = CloudflareVectorize(index_name=index_name)
+        self.knowledge_graph = KnowledgeGraph()
+        
+    async def index_content(self, repo_structure: List[Dict], file_contents: Dict[str, str]):
         """
-        Initialize the RAG system.
+        Index content into vector store and knowledge graph.
         
         Args:
-            cloudflare_key: Cloudflare API token for authentication
-            cloudflare_email: Cloudflare account email for identification
-            cloudflare_account_id: Cloudflare account ID for accessing resources
-            openai_key: OpenAI API key for embeddings
-            namespace: Namespace for vector storage
+            repo_structure: List of files and directories with metadata
+            file_contents: Dictionary of file paths to their contents
         """
-        self.vectorize = CloudflareVectorize(
-            api_key=cloudflare_key,
-            email=cloudflare_email,
-            account_id=cloudflare_account_id,
-            namespace=namespace
-        )
-        self.openai_client = OpenAI(api_key=openai_key)
-        self.code_parser = LanguageParser()
-        self.indexer = None
-        self.supported_languages = set()  # Track which languages are supported
-        
-    def _get_embedding(self, text: str) -> List[float]:
-        """Get embedding for text using OpenAI's text-embedding-3-small."""
-        response = self.openai_client.embeddings.create(
-            model="text-embedding-3-small",
-            input=text,
-            encoding_format="float"
-        )
-        return response.data[0].embedding
-        
-    async def initialize(self):
-        """Initialize vector storage."""
-        await self.vectorize.create_index(dimension=1536)  # text-embedding-3-small dimension
-        
-    def _create_chunk_from_node(self, node: CodeNode, file_path: str) -> CodeChunk:
-        """Create a code chunk from a Tree-sitter node."""
-        return CodeChunk(
-            content=node.content,
-            file_path=file_path,
-            chunk_type=node.type,
-            start_line=node.start_point[0],
-            end_line=node.end_point[0],
-            name=node.name,
-            scope=node.scope
-        )
-        
-    async def index_repository(self, repo_url: str, progress_callback: Optional[Callable[[str, int, int], None]] = None):
-        """
-        Index a code repository.
-        
-        Args:
-            repo_url: URL of the repository to index
-            progress_callback: Optional callback for progress updates
-        """
-        if progress_callback:
-            progress_callback("Fetching repository", 0, 1)
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            transient=True,
+        ) as progress:
+            # Build knowledge graph from repo structure
+            task = progress.add_task(description="Building knowledge graph")
+            self.knowledge_graph.process_repo_structure(repo_structure)
             
-        # Fetch and index repository
-        fetcher = RepoFetcher(repo_url)
-        repo_content = fetcher.fetch_repo_content()
-        if not repo_content:
-            raise Exception("Failed to fetch repository content")
-            
-        self.indexer = Indexer()
-        self.indexer.parse_content(repo_content)
-        
-        if progress_callback:
-            progress_callback("Repository fetched", 1, 1)
-        
-        # Get all chunks including structure and files
-        chunks_dict = self.indexer.get_all_chunks()
-        
-        # Convert to CodeChunk objects
-        chunks = []
-        
-        # Add repository structure as a special chunk
-        chunks.append(CodeChunk(
-            content=chunks_dict['structure'],
-            file_path='repository_structure',
-            chunk_type='structure'
-        ))
-        
-        # Process file chunks with Tree-sitter
-        total_files = sum(1 for path in chunks_dict if path.startswith('file:'))
-        processed_files = 0
-        
-        for path, content in chunks_dict.items():
-            if not path.startswith('file:'):
-                continue
-                
-            file_path = path[5:]  # Remove 'file:' prefix
-            language = self.code_parser.get_language_for_file(file_path)
-            
-            # Add the whole file as a chunk
-            file_chunk = CodeChunk(
-                content=content,
-                file_path=file_path,
-                chunk_type='file'
-            )
-            chunks.append(file_chunk)
-            
-            # Parse code into semantic chunks if supported language
-            if language:
-                try:
-                    # Extract code nodes (functions, classes, methods)
-                    code_nodes = self.code_parser.parse_code(content, language)
-                    if code_nodes:  # Language is supported and parsing succeeded
-                        self.supported_languages.add(language)
-                        for node in code_nodes:
-                            chunks.append(self._create_chunk_from_node(node, file_path))
+            # Process code chunks
+            chunks = []
+            for item in repo_structure:
+                if item['type'] == 'file':
+                    content = file_contents.get(item['path'])
+                    if content:
+                        # Add file as a chunk
+                        chunks.append({
+                            'type': 'file',
+                            'file_path': item['path'],
+                            'content': content,
+                            'metadata': {
+                                'id': item['path'],
+                                'type': 'file',
+                                'file_path': item['path']
+                            }
+                        })
+                        
+                        # Try to extract functions and classes
+                        lines = content.split('\n')
+                        in_function = False
+                        in_class = False
+                        current_chunk = []
+                        chunk_start = 0
+                        
+                        for i, line in enumerate(lines):
+                            stripped = line.strip()
                             
-                        # Extract imports and references
-                        imports = self.code_parser.extract_imports(content, language)
-                        if imports:
-                            chunks.append(CodeChunk(
-                                content="\n".join(imports),
-                                file_path=file_path,
-                                chunk_type='imports'
-                            ))
-                            
-                        references = self.code_parser.extract_references(content, language)
-                        if references:
-                            chunks.append(CodeChunk(
-                                content="\n".join(references),
-                                file_path=file_path,
-                                chunk_type='references'
-                            ))
-                except Exception as e:
-                    print(f"Error parsing {file_path}: {str(e)}")
-                    
-            processed_files += 1
-            if progress_callback:
-                progress_callback("Processing chunks", processed_files, total_files)
-        
-        # Generate embeddings in batches
-        batch_size = 100  # Match OpenAI's recommended batch size
-        total_chunks = len(chunks)
-        processed_chunks = 0
-        
-        for i in range(0, total_chunks, batch_size):
-            batch = chunks[i:i + batch_size]
+                            # Check for function definition
+                            if stripped.startswith('def '):
+                                if current_chunk:
+                                    chunk = {
+                                        'type': 'function' if in_function else 'class_method' if in_class else 'code',
+                                        'file_path': item['path'],
+                                        'content': '\n'.join(current_chunk),
+                                        'start_line': chunk_start,
+                                        'end_line': i - 1,
+                                        'metadata': {
+                                            'id': f"{item['path']}:{chunk_start}-{i-1}",
+                                            'type': 'function' if in_function else 'class_method' if in_class else 'code',
+                                            'file_path': item['path'],
+                                            'start_line': chunk_start,
+                                            'end_line': i - 1
+                                        }
+                                    }
+                                    chunks.append(chunk)
+                                current_chunk = [line]
+                                chunk_start = i
+                                in_function = True
+                                
+                            # Check for class definition
+                            elif stripped.startswith('class '):
+                                if current_chunk:
+                                    chunk = {
+                                        'type': 'function' if in_function else 'class_method' if in_class else 'code',
+                                        'file_path': item['path'],
+                                        'content': '\n'.join(current_chunk),
+                                        'start_line': chunk_start,
+                                        'end_line': i - 1,
+                                        'metadata': {
+                                            'id': f"{item['path']}:{chunk_start}-{i-1}",
+                                            'type': 'function' if in_function else 'class_method' if in_class else 'code',
+                                            'file_path': item['path'],
+                                            'start_line': chunk_start,
+                                            'end_line': i - 1
+                                        }
+                                    }
+                                    chunks.append(chunk)
+                                current_chunk = [line]
+                                chunk_start = i
+                                in_class = True
+                                in_function = False
+                                
+                            # Add line to current chunk
+                            else:
+                                current_chunk.append(line)
+                                
+                            # Check for end of block
+                            if stripped and not line.startswith(' '):
+                                if current_chunk:
+                                    chunk = {
+                                        'type': 'function' if in_function else 'class_method' if in_class else 'code',
+                                        'file_path': item['path'],
+                                        'content': '\n'.join(current_chunk),
+                                        'start_line': chunk_start,
+                                        'end_line': i,
+                                        'metadata': {
+                                            'id': f"{item['path']}:{chunk_start}-{i}",
+                                            'type': 'function' if in_function else 'class_method' if in_class else 'code',
+                                            'file_path': item['path'],
+                                            'start_line': chunk_start,
+                                            'end_line': i
+                                        }
+                                    }
+                                    chunks.append(chunk)
+                                current_chunk = []
+                                in_function = False
+                                in_class = False
+                        
+                        # Add final chunk
+                        if current_chunk:
+                            chunk = {
+                                'type': 'function' if in_function else 'class_method' if in_class else 'code',
+                                'file_path': item['path'],
+                                'content': '\n'.join(current_chunk),
+                                'start_line': chunk_start,
+                                'end_line': len(lines) - 1,
+                                'metadata': {
+                                    'id': f"{item['path']}:{chunk_start}-{len(lines)-1}",
+                                    'type': 'function' if in_function else 'class_method' if in_class else 'code',
+                                    'file_path': item['path'],
+                                    'start_line': chunk_start,
+                                    'end_line': len(lines) - 1
+                                }
+                            }
+                            chunks.append(chunk)
             
-            # Combine content with metadata for better semantic understanding
-            texts = []
-            for chunk in batch:
-                metadata = [
-                    f"File: {chunk.file_path}",
-                    f"Type: {chunk.chunk_type}",
-                    f"Language: {chunk.language}"
-                ]
-                
-                if chunk.name:
-                    metadata.append(f"Name: {chunk.name}")
-                if chunk.scope:
-                    metadata.append(f"Scope: {chunk.scope}")
-                if chunk.start_line > 0:
-                    metadata.append(f"Lines: {chunk.start_line}-{chunk.end_line}")
-                    
-                texts.append(f"{chunk.content}\n\n{' | '.join(metadata)}")
+            # Store chunks in knowledge graph
+            self.knowledge_graph.process_code_chunks(chunks)
+            progress.update(task, completed=True)
             
-            try:
-                # Get embeddings for batch
-                response = self.openai_client.embeddings.create(
-                    model="text-embedding-3-small",
-                    input=texts,
-                    encoding_format="float"
-                )
-                
-                # Assign embeddings to chunks
-                for chunk, embedding_data in zip(batch, response.data):
-                    chunk.embedding = embedding_data.embedding
-            except Exception as e:
-                print(f"Error generating embeddings for batch: {str(e)}")
-                continue  # Skip failed batch
-                
-            processed_chunks += len(batch)
-            if progress_callback:
-                progress_callback("Generating embeddings", processed_chunks, total_chunks)
+            # Create vector index
+            task = progress.add_task(description="Creating vector index")
+            self.vectorize.create_index(dimension=1536)  # text-embedding-3-small dimension
+            progress.update(task, completed=True)
             
-        # Store vectors
-        if progress_callback:
-            progress_callback("Storing vectors", 0, len(chunks))
+            # Generate embeddings and store vectors
+            task = progress.add_task(description="Generating embeddings")
+            texts = [chunk['content'] for chunk in chunks]
+            embeddings = await self.embeddings.embed_texts_async(texts)
+            progress.update(task, completed=True)
             
-        await self.vectorize.insert_vectors(chunks)
-        
-        if progress_callback:
-            progress_callback("Vectors stored", len(chunks), len(chunks))
+            # Store vectors with metadata
+            task = progress.add_task(description="Storing vectors")
+            metadata = [chunk['metadata'] for chunk in chunks]
+            self.vectorize.insert_vectors(embeddings, metadata)
+            progress.update(task, completed=True)
             
-        # Print language support summary
-        if self.supported_languages:
-            print("\nLanguage Support:")
-            print(f"Full parsing enabled for: {', '.join(sorted(self.supported_languages))}")
-            print("Other languages will be processed as plain text")
-            
-    async def query_repository(
-        self,
-        query: str,
-        max_results: int = 5,
-        similarity_threshold: float = 0.7
-    ) -> List[Dict]:
+    async def query(self, query: str, top_k: int = 5) -> List[Dict]:
         """
-        Query the repository for relevant code chunks.
+        Query using hybrid search approach.
+        
+        1. First, find relevant files based on metadata
+        2. Then, use vector search for semantic similarity
         
         Args:
-            query: Search query
-            max_results: Maximum number of results to return
-            similarity_threshold: Minimum similarity score (0-1)
+            query: Natural language query
+            top_k: Number of results to return
             
         Returns:
-            List of results with chunks and similarity scores
+            List of relevant code chunks with metadata
         """
-        try:
-            # Get query embedding
-            query_embedding = self._get_embedding(query)
+        # Generate query embedding
+        query_embedding = (await self.embeddings.embed_texts_async([query]))[0]
+        
+        # Query vector store
+        results = self.vectorize.query_vectors(query_embedding, top_k=top_k)
+        
+        # Enhance results with related files
+        enhanced_results = []
+        for result in results:
+            # Get related files from knowledge graph
+            file_path = result['metadata']['file_path']
+            related_files = self.knowledge_graph.get_related_files(file_path)
             
-            # Search vector store
-            results = await self.vectorize.query_vectors(
-                query_embedding,
-                max_results=max_results,
-                similarity_threshold=similarity_threshold
-            )
+            # Get chunks from related files
+            related_chunks = []
+            for related_file in related_files:
+                related_chunks.extend(self.knowledge_graph.get_file_chunks(related_file))
             
-            return results
-        except Exception as e:
-            print(f"Error querying repository: {str(e)}")
-            return []
+            # Add related information to result
+            result['related_files'] = related_files
+            result['related_chunks'] = related_chunks
+            enhanced_results.append(result)
+            
+        return enhanced_results

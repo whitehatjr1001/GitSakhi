@@ -94,6 +94,23 @@ wheels = [
 ]
 
 [[package]]
+name = "cloudflare"
+version = "4.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "distro" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "sniffio" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/50/2d/f5bad5e86898a650d1ceb7ddd04b4520d1bdbc82916afe7a154004b477cb/cloudflare-4.0.0.tar.gz", hash = "sha256:78b1222d532084bb29ab700257617fafd802a24c5af9b056f379b994e929af7e", size = 1638959 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9b/b2/54c768c0fe42fa14c62ac1a801e6d88cce3c82721aa10b5bee35ec877478/cloudflare-4.0.0-py3-none-any.whl", hash = "sha256:d8aa75b2e92f6a5f24ea368e7c19df0e42a76c528464acdc034528dd2597cb64", size = 3640599 },
+]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -117,6 +134,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "beautifulsoup4" },
+    { name = "cloudflare" },
     { name = "openai" },
     { name = "requests" },
     { name = "tree-sitter" },
@@ -125,6 +143,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "beautifulsoup4", specifier = ">=4.12.3" },
+    { name = "cloudflare", specifier = ">=4.0.0" },
     { name = "openai", specifier = ">=1.12.0" },
     { name = "requests", specifier = ">=2.32.3" },
     { name = "tree-sitter", specifier = ">=0.24.0" },

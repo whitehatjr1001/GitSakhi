@@ -1,43 +1,46 @@
-from typing import List, Union
-from sentence_transformers import SentenceTransformer
-import torch
+from typing import List
+import os
+from openai import OpenAI, AsyncOpenAI
 
-class CodeEmbedding:
-    """Code embedding using Sentence Transformers."""
+class OpenAIEmbeddings:
+    """OpenAI embeddings using text-embedding-3-small model."""
     
-    def __init__(self, model_name: str = 'all-MiniLM-L6-v2'):
-        """
-        Initialize with a lightweight but effective model.
-        all-MiniLM-L6-v2 is:
-        - Free and open source
-        - 384 dimension embeddings (good balance of size/performance)
-        - Well-suited for code and text
-        - Fast inference
-        """
-        self.model = SentenceTransformer(model_name)
-        self.embedding_dim = 384  # Fixed for all-MiniLM-L6-v2
-        
-    def embed_text(self, text: str) -> List[float]:
-        """Create embedding for text."""
-        with torch.no_grad():
-            embedding = self.model.encode(text, convert_to_tensor=True)
-            return embedding.cpu().numpy().tolist()
+    def __init__(self):
+        """Initialize OpenAI client with API key from environment."""
+        self.api_key = os.environ.get("OPENAI_API_KEY")
+        if not self.api_key:
+            raise ValueError("OPENAI_API_KEY not found in environment")
             
-    def embed_code(self, code: str) -> List[float]:
-        """
-        Create embedding for code.
-        Currently uses same method as text, but could be extended with
-        code-specific preprocessing.
-        """
-        return self.embed_text(code)
+        self.client = OpenAI(api_key=self.api_key)
+        self.async_client = AsyncOpenAI(api_key=self.api_key)
+        self.model = "text-embedding-3-small"
         
-    def embed_batch(self, texts: List[str]) -> List[List[float]]:
-        """Create embeddings for multiple texts efficiently."""
-        with torch.no_grad():
-            embeddings = self.model.encode(texts, convert_to_tensor=True)
-            return embeddings.cpu().numpy().tolist()
+    def embed_texts(self, texts: List[str], batch_size: int = 100) -> List[List[float]]:
+        """Generate embeddings for texts in batches."""
+        all_embeddings = []
+        
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            response = self.client.embeddings.create(
+                model=self.model,
+                input=batch
+            )
+            embeddings = [data.embedding for data in response.data]
+            all_embeddings.extend(embeddings)
             
-    @property
-    def dimension(self) -> int:
-        """Get embedding dimension."""
-        return self.embedding_dim
+        return all_embeddings
+        
+    async def embed_texts_async(self, texts: List[str], batch_size: int = 100) -> List[List[float]]:
+        """Generate embeddings for texts in batches asynchronously."""
+        all_embeddings = []
+        
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            response = await self.async_client.embeddings.create(
+                model=self.model,
+                input=batch
+            )
+            embeddings = [data.embedding for data in response.data]
+            all_embeddings.extend(embeddings)
+            
+        return all_embeddings

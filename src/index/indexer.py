@@ -71,11 +71,15 @@ class Indexer:
             # Create full path
             full_path = '/'.join(current_path)
             
+            # Get parent path
+            parent_path = '/'.join(current_path[:-1]) if level > 0 else None
+            
             # Add to structure
             self.repo_structure.append({
                 'name': name,
                 'level': level,
                 'path': full_path,
+                'parent': parent_path,
                 'type': 'directory' if any(
                     item['path'].startswith(full_path + '/') 
                     for item in self.repo_structure
@@ -98,22 +102,114 @@ class Indexer:
             output.append(f"{prefix}{name}")
         return '\n'.join(output)
     
-    def get_all_chunks(self) -> Dict[str, str]:
-        """Get all chunks including structure and file contents."""
-        chunks = {
-            'structure': self.get_structure_text()
-        }
+    def get_chunks(self) -> List[Dict]:
+        """Get code chunks with metadata for knowledge graph."""
+        chunks = []
         
-        # Add file chunks with proper paths
-        for path, content in self.file_contents.items():
-            if path in [item['path'] for item in self.repo_structure]:
-                chunks[f'file:{path}'] = content
-            
+        # Process each file
+        for item in self.repo_structure:
+            if item['type'] == 'file':
+                file_path = item['path']
+                content = self.file_contents.get(file_path)
+                
+                if content:
+                    # Add file as a chunk
+                    chunks.append({
+                        'type': 'file',
+                        'file_path': file_path,
+                        'content': content,
+                        'metadata': {
+                            'id': file_path,
+                            'type': 'file',
+                            'file_path': file_path
+                        }
+                    })
+                    
+                    # Try to extract functions and classes
+                    lines = content.split('\n')
+                    in_function = False
+                    in_class = False
+                    current_chunk = []
+                    chunk_start = 0
+                    
+                    for i, line in enumerate(lines):
+                        stripped = line.strip()
+                        
+                        # Check for function definition
+                        if re.match(r'^def\s+\w+\s*\(', stripped):
+                            if current_chunk:
+                                chunks.append(self._create_chunk(
+                                    file_path, 
+                                    current_chunk, 
+                                    chunk_start, 
+                                    i - 1,
+                                    'function' if in_function else 'class_method' if in_class else 'code'
+                                ))
+                            current_chunk = [line]
+                            chunk_start = i
+                            in_function = True
+                            
+                        # Check for class definition
+                        elif re.match(r'^class\s+\w+', stripped):
+                            if current_chunk:
+                                chunks.append(self._create_chunk(
+                                    file_path,
+                                    current_chunk,
+                                    chunk_start,
+                                    i - 1,
+                                    'function' if in_function else 'class_method' if in_class else 'code'
+                                ))
+                            current_chunk = [line]
+                            chunk_start = i
+                            in_class = True
+                            in_function = False
+                            
+                        # Add line to current chunk
+                        else:
+                            current_chunk.append(line)
+                            
+                        # Check for end of block
+                        if stripped and not line.startswith(' '):
+                            if current_chunk:
+                                chunks.append(self._create_chunk(
+                                    file_path,
+                                    current_chunk,
+                                    chunk_start,
+                                    i,
+                                    'function' if in_function else 'class_method' if in_class else 'code'
+                                ))
+                            current_chunk = []
+                            in_function = False
+                            in_class = False
+                    
+                    # Add final chunk
+                    if current_chunk:
+                        chunks.append(self._create_chunk(
+                            file_path,
+                            current_chunk,
+                            chunk_start,
+                            len(lines) - 1,
+                            'function' if in_function else 'class_method' if in_class else 'code'
+                        ))
+        
         return chunks
     
-    def get_file_content(self, file_path: str) -> Optional[str]:
-        """Get content of a specific file."""
-        return self.file_contents.get(file_path)
+    def _create_chunk(self, file_path: str, lines: List[str], start: int, end: int, chunk_type: str) -> Dict:
+        """Create a code chunk with metadata."""
+        return {
+            'type': chunk_type,
+            'file_path': file_path,
+            'content': '\n'.join(lines),
+            'start_line': start,
+            'end_line': end,
+            'metadata': {
+                'id': f"{file_path}:{start}-{end}",
+                'type': chunk_type,
+                'file_path': file_path,
+                'start_line': start,
+                'end_line': end
+            }
+        }
 
 # Example usage
 if __name__ == "__main__":

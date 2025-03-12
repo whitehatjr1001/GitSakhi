@@ -49,15 +49,25 @@ class CloudflareVectorize:
         return response.json()
 
     def query_vectors(self, query_vector: List[float], top_k: int = 5) -> List[Dict]:
-        """Query the vector database to retrieve similar items."""
-        url = f"{self.base_url}/search"
+        """Query similar vectors from Cloudflare vector index."""
+        
+        url = f"https://api.cloudflare.com/client/v4/accounts/{self.account_id}/vectorize/namespaces/{self.index_name}/search"
+        
+        headers = {
+            "X-Auth-Email": os.getenv("CLOUDFLARE_EMAIL"),  # Required
+            "X-Auth-Key": os.getenv("CLOUDFLARE_API_KEY"),  # Use Global API Key
+            "Content-Type": "application/json"
+        }
+        
         payload = {
             "vector": query_vector,
             "top_k": top_k
         }
-        response = requests.post(url, headers=self.headers, json=payload)
+        
+        response = requests.post(url, headers=headers, json=payload)
         
         if response.status_code != 200:
             raise Exception(f"Query failed: {response.text}")
         
         return response.json().get("result", [])
+

@@ -1,5 +1,6 @@
 import asyncio
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 from rich import print
 from rich.panel import Panel
@@ -11,20 +12,36 @@ from src.rag.code_rag import CodeRAG
 
 async def main():
     # Load environment variables from .env
-    load_dotenv()
+    env_path = Path(__file__).parent.parent / '.env'
+    if not env_path.exists():
+        print(f"[red]No .env file found at {env_path}")
+        print("[yellow]Please create a .env file with the following variables:")
+        print("CLOUDFLARE_API_KEY=your_api_key")
+        print("CLOUDFLARE_EMAIL=your_email")
+        print("CLOUDFLARE_ACCOUNT_ID=your_account_id")
+        print("OPENAI_API_KEY=your_api_key")
+        return
+        
+    load_dotenv(env_path)
     
     # Required environment variables
-    required_vars = [
-        "CLOUDFLARE_API_KEY",
-        "CLOUDFLARE_EMAIL", 
-        "CLOUDFLARE_ACCOUNT_ID",
-        "OPENAI_API_KEY"
-    ]
+    required_vars = {
+        "CLOUDFLARE_API_KEY": "your Cloudflare API key (Global API Key)",
+        "CLOUDFLARE_EMAIL": "your Cloudflare account email", 
+        "CLOUDFLARE_ACCOUNT_ID": "your Cloudflare account ID",
+        "OPENAI_API_KEY": "your OpenAI API key"
+    }
     
     # Check for missing variables
-    missing = [var for var in required_vars if not os.environ.get(var)]
+    missing = []
+    for var, desc in required_vars.items():
+        if not os.getenv(var):
+            missing.append(f"{var} ({desc})")
+            
     if missing:
-        print(f"[red]Missing required environment variables: {', '.join(missing)}")
+        print("[red]Missing required environment variables:")
+        for var in missing:
+            print(f"- {var}")
         return
         
     try:
